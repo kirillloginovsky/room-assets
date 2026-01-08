@@ -13,7 +13,7 @@ export function RoomForm({ mode, initialRoom, onCancel, onSave }: RoomFormProps)
     code: initialRoom?.code ?? "",
     name: initialRoom?.name ?? "",
     capacity: initialRoom?.capacity ?? 0,
-    equipment: initialRoom ? initialRoom.equipment.join(", ") : "",
+   equipment: initialRoom ? String(initialRoom.equipment ?? "") : "",
     status: initialRoom?.status ?? "available",
   });
 

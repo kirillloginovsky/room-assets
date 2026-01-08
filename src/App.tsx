@@ -1,491 +1,284 @@
-import { useEffect, useState, type ChangeEvent } from "react";
-import { Header } from "./components/Header";
-import { Button } from "./components/Button";
-import { RoomTable } from "./components/RoomTable";
-import { BookingsTable } from "./components/BookingsTable";
-import { BookingForm } from "./components/BookingForm";
-import { BookingsSchedule } from "./components/BookingsSchedule";
-import { RoomForm } from "./components/RoomForm";
-
-import * as RoomsApi from "./api/rooms";
-import * as BookingsApi from "./api/bookings";
-
-import type {
-  Booking,
-  NewBookingPayload,
-  Room,
-  RoomFormPayload,
-} from "./types/global";
-
+import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 
-interface ExportData {
-  rooms: Room[];
-  bookings: Booking[];
-}
+import { api } from "./api";
 
-function App() {
-  const [activeNav, setActiveNav] = useState("catalog");
+import { Header } from "./components/Header";
+import { BookingForm } from "./components/BookingForm/BookingForm";
+import { BookingsTable } from "./components/BookingsTable";
+import { BookingsSchedule } from "./components/BookingsSchedule";
 
-  // загрузка
-  const [loading, setLoading] = useState(true);
+type NavId = "catalog" | "bookings" | "settings";
 
-  // данные
-  const [rooms, setRooms] = useState<Room[]>([]);
-  const [bookings, setBookings] = useState<Booking[]>([]);
+export default function App() {
+  const [nav, setNav] = useState<NavId>("catalog");
 
-  // Бронирования UI
-  const [bookingMode, setBookingMode] = useState<"list" | "create" | "edit">(
-    "list"
-  );
-  const [bookingsView, setBookingsView] = useState<"table" | "schedule">(
-    "table"
-  );
-  const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
+  const [rooms, setRooms] = useState<any[]>([]);
+  const [bookings, setBookings] = useState<any[]>([]);
 
-  // Аудитории UI
-  const [roomMode, setRoomMode] = useState<"list" | "create" | "edit">("list");
-  const [editingRoom, setEditingRoom] = useState<Room | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // ====== ЗАГРУЗКА ИЗ API (MSW) ======
+  const [showBookingForm, setShowBookingForm] = useState(false);
+  const [editBooking, setEditBooking] = useState<any | null>(null);
+
+  async function loadAll() {
+    setLoading(true);
+    setError(null);
+    try {
+      const [r, b] = await Promise.all([api.getRooms(), api.getBookings()]);
+      setRooms(r);
+      setBookings(b);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
-    (async () => {
-      try {
-        setLoading(true);
-        const [r, b] = await Promise.all([
-          RoomsApi.getRooms(),
-          BookingsApi.getBookings(),
-        ]);
-        setRooms(r);
-        setBookings(b);
-      } catch (e) {
-        console.error(e);
-        alert("Ошибка загрузки данных из API (MSW). Проверь консоль.");
-      } finally {
-        setLoading(false);
-      }
-    })();
+    loadAll();
   }, []);
 
-  const handleNavigate = (id: string) => {
-    setActiveNav(id);
+  const stats = useMemo(() => {
+    const available = rooms.filter((x) => x.status === "available").length;
+    const booked = rooms.filter((x) => x.status === "booked").length;
+    const maintenance = rooms.filter((x) => x.status === "maintenance").length;
 
-    if (id === "bookings") {
-      setBookingMode("list");
-      setBookingsView("table");
-      setEditingBooking(null);
-    }
+    const confirmed = bookings.filter((b) => b.status === "confirmed").length;
+    const pending = bookings.filter((b) => b.status === "pending").length;
+    const cancelled = bookings.filter((b) => b.status === "cancelled").length;
 
-    if (id === "catalog") {
-      setRoomMode("list");
-      setEditingRoom(null);
-    }
-  };
+    return { available, booked, maintenance, confirmed, pending, cancelled };
+  }, [rooms, bookings]);
 
-  // ====== EXPORT ======
-  const handleExportData = () => {
-    const data: ExportData = { rooms, bookings };
-
-    const json = JSON.stringify(data, null, 2);
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `room-booking-export-${new Date()
-      .toISOString()
-      .slice(0, 10)}.json`;
-    a.click();
-
-    URL.revokeObjectURL(url);
-  };
-
-  // ====== IMPORT (только в состояние фронта) ======
-  const handleImportData = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-
-    reader.onload = () => {
-      try {
-        const text = reader.result as string;
-        const parsed = JSON.parse(text) as Partial<ExportData>;
-
-        if (
-          !parsed ||
-          typeof parsed !== "object" ||
-          !Array.isArray(parsed.rooms) ||
-          !Array.isArray(parsed.bookings)
-        ) {
-          alert("Файл имеет неверный формат. Ожидаются поля rooms и bookings.");
-          return;
-        }
-
-        setRooms(parsed.rooms as Room[]);
-        setBookings(parsed.bookings as Booking[]);
-        alert("Данные успешно импортированы из файла.");
-      } catch (error) {
-        console.error(error);
-        alert("Ошибка при чтении или разборе JSON-файла.");
-      } finally {
-        event.target.value = "";
-      }
-    };
-
-    reader.readAsText(file, "utf-8");
-  };
-
-  // ====== BOOKINGS CRUD через API ======
-  const handleCreateBooking = async (data: NewBookingPayload) => {
+  async function createBooking(payload: any) {
+    setLoading(true);
+    setError(null);
     try {
-      const created = await BookingsApi.createBooking(data);
-      setBookings((prev) => [...prev, created]);
-      setBookingMode("list");
-      setBookingsView("table");
+      const created = await api.createBooking({ ...payload, status: "pending" });
+      setBookings((prev: any[]) => [created, ...prev]);
+      setShowBookingForm(false);
     } catch (e) {
-      console.error(e);
-      alert("Ошибка создания бронирования.");
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
     }
-  };
+  }
 
-  const handleCancelBooking = async (id: string) => {
+  async function updateBooking(id: string, patch: any) {
+    setLoading(true);
+    setError(null);
     try {
-      const updated = await BookingsApi.cancelBooking(id);
-      setBookings((prev) => prev.map((b) => (b.id === id ? updated : b)));
+      const updated = await api.updateBooking(id, patch);
+      setBookings((prev: any[]) => prev.map((b) => (b.id === id ? updated : b)));
     } catch (e) {
-      console.error(e);
-      alert("Ошибка отмены бронирования.");
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
     }
-  };
+  }
 
-  const handleUpdateBooking = async (id: string, data: NewBookingPayload) => {
+  async function deleteBooking(id: string) {
+    setLoading(true);
+    setError(null);
     try {
-      const updated = await BookingsApi.updateBooking(id, data);
-      setBookings((prev) => prev.map((b) => (b.id === id ? updated : b)));
-      setBookingMode("list");
-      setEditingBooking(null);
+      await api.deleteBooking(id);
+      setBookings((prev: any[]) => prev.filter((b) => b.id !== id));
     } catch (e) {
-      console.error(e);
-      alert("Ошибка обновления бронирования.");
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
     }
-  };
-
-  const handleDeleteBooking = async (id: string) => {
-    try {
-      await BookingsApi.deleteBooking(id);
-      setBookings((prev) => prev.filter((b) => b.id !== id));
-    } catch (e) {
-      console.error(e);
-      alert("Ошибка удаления бронирования.");
-    }
-  };
-
-  const handleEditBooking = (booking: Booking) => {
-    setEditingBooking(booking);
-    setBookingMode("edit");
-  };
-
-  // ====== ROOMS CRUD через API ======
-  const handleCreateRoom = async (data: RoomFormPayload) => {
-    try {
-      const created = await RoomsApi.createRoom(data);
-      setRooms((prev) => [...prev, created]);
-      setRoomMode("list");
-    } catch (e) {
-      console.error(e);
-      alert("Ошибка создания аудитории.");
-    }
-  };
-
-  const handleUpdateRoom = async (id: string, data: RoomFormPayload) => {
-    try {
-      const updated = await RoomsApi.updateRoom(id, data);
-      setRooms((prev) => prev.map((r) => (r.id === id ? updated : r)));
-      setRoomMode("list");
-      setEditingRoom(null);
-    } catch (e) {
-      console.error(e);
-      alert("Ошибка обновления аудитории.");
-    }
-  };
-
-  const handleDeleteRoom = async (id: string) => {
-    try {
-      await RoomsApi.deleteRoom(id);
-      setRooms((prev) => prev.filter((r) => r.id !== id));
-    } catch (e) {
-      console.error(e);
-      alert("Ошибка удаления аудитории.");
-    }
-  };
-
-  const handleEditRoom = (room: Room) => {
-    setEditingRoom(room);
-    setRoomMode("edit");
-  };
-
-  if (loading) {
-    return (
-      <div className="app-container">
-        <Header
-          activeNavId={activeNav}
-          onNavigate={handleNavigate}
-          onBellClick={() => alert("🔔 Уведомления")}
-          userName="Мария Петрова"
-        />
-        <main className="main-content">
-          <div className="no-data" style={{ background: "white" }}>
-            Загрузка данных...
-          </div>
-        </main>
-      </div>
-    );
   }
 
   return (
     <div className="app-container">
       <Header
-        activeNavId={activeNav}
-        onNavigate={handleNavigate}
-        onBellClick={() => alert("🔔 Уведомления")}
-        userName="Мария Петрова"
+        activeNavId={nav}
+        onNavigate={(id) => setNav(id as NavId)}
+        onBellClick={() => alert("Уведомления: пока нет")}
+        userName="Кирилл"
       />
 
       <main className="main-content">
-        <h1 className="page-title"> Добро пожаловать в Room Booking!</h1>
-        <p className="page-subtitle">
-          Система бронирования аудиторий и оборудования
-        </p>
-
-        {/* Импорт / Экспорт */}
-        <div className="data-actions">
-          <Button variant="secondary" onClick={handleExportData}>
-             Экспорт данных (JSON)
-          </Button>
-
-          <label className="secondary-btn file-input-label">
-            Импорт данных (JSON)
-            <input
-              type="file"
-              accept="application/json"
-              onChange={handleImportData}
-            />
-          </label>
-        </div>
-
-        <div className="action-buttons">
-          <Button
-            onClick={() => {
-              setActiveNav("bookings");
-              setBookingMode("create");
-              setEditingBooking(null);
-            }}
-          >
-            Создать бронирование
-          </Button>
-
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setActiveNav("catalog");
-              setRoomMode("list");
-            }}
-          >
-           Поиск аудиторий
-          </Button>
-        </div>
-
-        {/* Статистика (можно позже связать с данными) */}
-        <div className="stats-grid">
-          <div className="stat-card">
-            <div className="stat-number">{rooms.length}</div>
-            <div className="stat-label">Всего аудиторий</div>
+        {error && (
+          <div className="filters-panel" style={{ border: "1px solid #ffbdbd", background: "#ffe5e5" }}>
+            <b>Ошибка:</b> {error}
           </div>
-          <div className="stat-card">
-            <div className="stat-number">
-              {rooms.filter((r) => r.status === "available").length}
-            </div>
-            <div className="stat-label">Доступные сейчас</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-number">
-              {bookings.filter((b) => b.status !== "cancelled").length}
-            </div>
-            <div className="stat-label">Бронирования</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-number">156</div>
-            <div className="stat-label">Единиц оборудования</div>
-          </div>
-        </div>
+        )}
 
-        <div style={{ marginTop: "40px" }}>
-          {/* Каталог аудиторий */}
-          {activeNav === "catalog" && (
-            <div>
-              <h2
-                style={{
-                  fontSize: "24px",
-                  color: "#2c3e50",
-                  marginBottom: "16px",
-                }}
-              >
-                Каталог аудиторий
-              </h2>
+        {nav === "catalog" && (
+          <>
+            <h1 className="page-title">Каталог аудиторий</h1>
+            <div className="page-subtitle">Доступность аудиторий и оборудование.</div>
 
-              {roomMode === "list" ? (
-                <>
-                  <div className="view-toggle" style={{ marginBottom: 16 }}>
-                    <button
-                      type="button"
-                      className="primary-btn"
-                      onClick={() => {
-                        setRoomMode("create");
-                        setEditingRoom(null);
-                      }}
-                    >
-                    Добавить аудиторию
-                    </button>
-                  </div>
-
-                  <RoomTable
-                    rooms={rooms}
-                    onDeleteRoom={handleDeleteRoom}
-                    onEditRoom={handleEditRoom}
-                  />
-                </>
-              ) : (
-                <RoomForm
-                  mode={roomMode === "create" ? "create" : "edit"}
-                  initialRoom={roomMode === "edit" ? editingRoom : null}
-                  onCancel={() => {
-                    setRoomMode("list");
-                    setEditingRoom(null);
-                  }}
-                  onSave={(payload) => {
-                    if (roomMode === "create") {
-                      void handleCreateRoom(payload);
-                    } else if (roomMode === "edit" && editingRoom) {
-                      void handleUpdateRoom(editingRoom.id, payload);
-                    }
-                  }}
-                />
-              )}
-            </div>
-          )}
-
-          {/* Управление бронированием */}
-          {activeNav === "bookings" && (
-            <div>
-              <h2
-                style={{
-                  fontSize: "24px",
-                  color: "#2c3e50",
-                  marginBottom: "16px",
-                }}
-              >
-              Управление бронированием
-              </h2>
-
-              {bookingMode === "list" ? (
-                <>
-                  <div className="view-toggle">
-                    <button
-                      type="button"
-                      className={
-                        bookingsView === "table"
-                          ? "primary-btn"
-                          : "secondary-btn"
-                      }
-                      onClick={() => setBookingsView("table")}
-                    >
-                    Список
-                    </button>
-                    <button
-                      type="button"
-                      className={
-                        bookingsView === "schedule"
-                          ? "primary-btn"
-                          : "secondary-btn"
-                      }
-                      onClick={() => setBookingsView("schedule")}
-                    >
-                      Расписание
-                    </button>
-                  </div>
-
-                  {bookingsView === "table" ? (
-                    <>
-                      <div
-                        className="no-data"
-                        style={{
-                          background: "white",
-                          padding: "24px",
-                          marginBottom: "24px",
-                        }}
-                      >
-                        Здесь отображаются все бронирования.
-                        <br />
-                        Нажмите «Создать бронирование» вверху страницы, чтобы
-                        добавить новую запись.
-                      </div>
-
-                      <BookingsTable
-                        bookings={bookings}
-                        onCancelBooking={handleCancelBooking}
-                        onEditBooking={handleEditBooking}
-                        onDeleteBooking={handleDeleteBooking}
-                      />
-                    </>
-                  ) : (
-                    <BookingsSchedule bookings={bookings} />
-                  )}
-                </>
-              ) : (
-                <BookingForm
-                  mode={bookingMode}
-                  initialData={bookingMode === "edit" ? editingBooking : null}
-                  onCancel={() => {
-                    setBookingMode("list");
-                    setEditingBooking(null);
-                  }}
-                  onSubmit={(payload) => {
-                    if (bookingMode === "create") {
-                      void handleCreateBooking(payload);
-                    } else if (bookingMode === "edit" && editingBooking) {
-                      void handleUpdateBooking(editingBooking.id, payload);
-                    }
-                  }}
-                />
-              )}
-            </div>
-          )}
-
-          {/* Настройки */}
-          {activeNav === "settings" && (
-            <div>
-              <h2
-                style={{
-                  fontSize: "24px",
-                  color: "#2c3e50",
-                  marginBottom: "16px",
-                }}
-              >
-                Настройки
-              </h2>
-              <div
-                className="no-data"
-                style={{ background: "white", padding: "40px" }}
-              >
-                Раздел в разработке. Здесь будут настройки приложения.
+            <div className="stats-grid">
+              <div className="stat-card">
+                <div className="stat-number">{stats.available}</div>
+                <div className="stat-label">Доступны</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-number">{stats.booked}</div>
+                <div className="stat-label">Забронированы</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-number">{stats.maintenance}</div>
+                <div className="stat-label">Обслуживание</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-number">{rooms.length}</div>
+                <div className="stat-label">Всего</div>
               </div>
             </div>
-          )}
-        </div>
+
+            <div className="action-buttons">
+              <button
+                className="primary-btn"
+                onClick={() => {
+                  setNav("bookings");
+                  setShowBookingForm(true);
+                }}
+              >
+                ➕ Создать бронирование
+              </button>
+
+              <button className="secondary-btn" onClick={loadAll} disabled={loading}>
+                🔄 {loading ? "Обновляю..." : "Обновить"}
+              </button>
+            </div>
+
+            <div className="table-container">
+              <table className="rooms-table">
+                <thead>
+                  <tr className="table-header">
+                    <th>Код</th>
+                    <th>Название</th>
+                    <th>Вместимость</th>
+                    <th>Оборудование</th>
+                    <th>Статус</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rooms.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="no-data">
+                        {loading ? "Загрузка..." : "Нет данных"}
+                      </td>
+                    </tr>
+                  ) : (
+                    rooms.map((r) => (
+                      <tr key={r.id} className="table-row">
+                        <td><strong>{r.code}</strong></td>
+                        <td>{r.name}</td>
+                        <td>{r.capacity}</td>
+                        <td>
+                          <div className="equipment-tags">
+                            {String(r.equipment ?? "")
+                              .split(",")
+                              .map((x: string) => x.trim())
+                              .filter(Boolean)
+                              .map((x: string) => (
+                                <span key={`${r.id}-${x}`} className="equipment-tag">
+                                  {x}
+                                </span>
+                              ))}
+                          </div>
+                        </td>
+                        <td>
+                          <span
+                            className={`status-badge ${
+                              r.status === "available"
+                                ? "status-available"
+                                : r.status === "booked"
+                                ? "status-booked"
+                                : "status-maintenance"
+                            }`}
+                          >
+                            {r.status === "available" && "Доступна"}
+                            {r.status === "booked" && "Забронирована"}
+                            {r.status === "maintenance" && "Обслуживание"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        {nav === "bookings" && (
+          <>
+            <h1 className="page-title">Управление бронированием</h1>
+            <div className="page-subtitle">Создание, фильтры, расписание.</div>
+
+            <div className="action-buttons">
+              <button
+                className="primary-btn"
+                onClick={() => {
+                  setEditBooking(null);
+                  setShowBookingForm(true);
+                }}
+              >
+                ➕ Создать бронирование
+              </button>
+
+              <button className="secondary-btn" onClick={loadAll} disabled={loading}>
+                🔄 {loading ? "Обновляю..." : "Обновить"}
+              </button>
+            </div>
+
+            {showBookingForm && (
+              <BookingForm
+                mode={editBooking ? "edit" : "create"}
+                initialData={editBooking}
+                onCancel={() => {
+                  setShowBookingForm(false);
+                  setEditBooking(null);
+                }}
+                onSubmit={(payload) => {
+                  if (editBooking) {
+                    updateBooking(editBooking.id, payload);
+                    setShowBookingForm(false);
+                    setEditBooking(null);
+                  } else {
+                    createBooking(payload);
+                  }
+                }}
+              />
+            )}
+
+            <BookingsTable
+              bookings={bookings}
+              onCancelBooking={(id) => updateBooking(id, { status: "cancelled" })}
+              onEditBooking={(b) => {
+                setEditBooking(b);
+                setShowBookingForm(true);
+              }}
+              onDeleteBooking={deleteBooking}
+            />
+
+            <BookingsSchedule bookings={bookings} />
+          </>
+        )}
+
+        {nav === "settings" && (
+          <>
+            <h1 className="page-title">Настройки</h1>
+            <div className="page-subtitle">Служебная страница.</div>
+
+            <div className="filters-panel">
+              <div className="filters-title">⚙️ Конфигурация</div>
+              <div className="filter-stats">
+                <div><strong>API Base:</strong> {import.meta.env.VITE_API_BASE}</div>
+                <div><strong>Режим:</strong> {import.meta.env.DEV ? "DEV" : "PROD"}</div>
+              </div>
+            </div>
+          </>
+        )}
       </main>
     </div>
   );
 }
-
-export default App;

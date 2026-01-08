@@ -9,12 +9,10 @@ const HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
 const getHourLabel = (h: number) => `${h.toString().padStart(2, "0")}:00`;
 
 export function BookingsSchedule({ bookings }: BookingsScheduleProps) {
-  // Берём первую дату из списка как "выбранный день"
   const currentDate =
     bookings[0]?.date ?? new Date().toISOString().slice(0, 10);
   const bookingsForDate = bookings.filter((b) => b.date === currentDate);
 
-  // Список аудиторий, у которых есть брони в этот день
   const roomsMap = new Map<string, { code: string; name: string }>();
   for (const b of bookingsForDate) {
     roomsMap.set(b.roomCode, { code: b.roomCode, name: b.roomName });
@@ -23,7 +21,7 @@ export function BookingsSchedule({ bookings }: BookingsScheduleProps) {
     a.code.localeCompare(b.code, "ru")
   );
 
-  // Есть ли бронь для аудитории в конкретный час
+  
   const getBookingForSlot = (roomCode: string, hour: number) =>
     bookingsForDate.find((b) => {
       if (b.roomCode !== roomCode) return false;
